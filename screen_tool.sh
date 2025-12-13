@@ -1,0 +1,95 @@
+#!/bin/bash
+
+tool_path="`cd $(dirname $BASH_SOURCE);pwd;cd - > /dev/null`"
+
+
+# Regist __log_screen_path
+__log_screen_path() {
+    if [ -z "$STY" ]; then
+        return
+    fi
+
+    win_id=$WINDOW
+    ss_name=${STY#*.}
+
+    if [[ "$PROMPT_COMMAND;" == *"$BASH_COMMAND;"* ]]; then
+        return 
+    fi
+
+    if [[ "${BASH_COMMAND:0:6}" == "python" ]]; then
+        return
+    fi
+
+    #printf "%-16s %-6s %s\n" "$ss_name" "$win_id" "$PWD"
+    #python3 $tool_path/screen_tool.py "set" "$ss_name" "$win_id" "$PWD" "$BASH_COMMAND"
+    python3 $tool_path/screen_tool.py "set" "$BASH_COMMAND"
+}
+
+if [[ -z "$PROMPT_COMMAND" ]]; then
+    PROMPT_COMMAND="__log_screen_path"
+else
+    PROMPT_COMMAND="$(echo $PROMPT_COMMAND | sed 's/;__log_screen_path//g' )"
+    PROMPT_COMMAND="${PROMPT_COMMAND%%+([[:space:];])};__log_screen_path"
+fi
+trap __log_screen_path DEBUG
+
+
+# Regist __on_bash_exit
+__on_bash_exit() {
+    if [ -z "$STY" ]; then
+        return
+    fi
+
+    win_id=$WINDOW
+    ss_name=${STY#*.}
+
+    python3 $tool_path/screen_tool.py "del"
+}
+trap __on_bash_exit EXIT
+
+
+screen_tool() {
+    ss_name=${STY#*.}
+    switch_id=$1
+    if [ -z "$switch_id" ]; then
+        python3 $tool_path/screen_tool.py "show"
+    elif [ x"$switch_id" == x"-a" ]; then
+        python3 $tool_path/screen_tool.py "show_all"
+    else
+        path=$(python3 $tool_path/screen_tool.py "get" $switch_id)
+        cd "$path"
+    fi
+}
+
+
+# install / uninstall / normal exec ##########################################
+script_name=$(basename "$BASH_SOURCE")
+line=$(awk "/source .*$script_name/ {print FNR}" ~/.bashrc)
+if [ x"$1" = x"install" ];  then
+    if [ -z "$line" ]; then
+        echo "source $tool_path/$script_name" >> ~/.bashrc
+        echo "$script_name install success"
+        bash
+    else
+        echo "$script_name has been installed!"
+    fi
+
+elif [ x"$1" = x"uninstall" ];then
+    if [ "a$line" = "a" ]; then
+        echo "Can't find $script_name!"
+    else
+        sed -i "$line d" ~/.bashrc
+        echo "$script_name has been uninstalled!"
+
+        alias st='st'
+    fi
+
+elif [ x"$1" = x"" ]; then
+    alias st='screen_tool'
+
+    echo "$script_name load completed!"
+
+else
+    echo "$script_name [install | uninstall]"
+
+fi
