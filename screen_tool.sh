@@ -55,6 +55,10 @@ screen_tool() {
         python3 $tool_path/screen_tool.py "show"
     elif [ x"$switch_id" == x"-a" ]; then
         python3 $tool_path/screen_tool.py "show_all"
+    elif [ x"$switch_id" == x"-last" ]; then
+        python3 $tool_path/screen_tool.py "get_last_pwd"
+    elif [ x"$switch_id" == x"-load" ]; then
+        python3 $tool_path/screen_tool.py "load" $2
     else
         path=$(python3 $tool_path/screen_tool.py "get" $switch_id)
         cd "$path"
@@ -86,6 +90,9 @@ elif [ x"$1" = x"uninstall" ];then
 
 elif [ x"$1" = x"" ]; then
     alias st='screen_tool'
+
+    last=$(screen_tool -last)
+    cd "$last"
 
     echo "$script_name load completed!"
 

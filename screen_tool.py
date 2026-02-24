@@ -145,7 +145,7 @@ def reset_screen(screen_conf):
 
     for ss_name, ss_obj in screen_conf.items():
         create_session(ss_name, ss_obj)
-        time.sleep(0.2)
+        time.sleep(1)
 
 
     return
