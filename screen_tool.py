@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
 import sys
+
+
 from pathlib import Path
 import os
 import tempfile
@@ -9,35 +11,58 @@ import time
 import copy
 import subprocess
 
+import getpass
+username = getpass.getuser()
+lock_path = f"/tmp/{username}_lock"
+
 
 
 CONF_PATH = "~/screen_tool/"
 
 def run(cmd):
+    print(f"run: {' '.join(cmd)}")
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if r.returncode != 0:
         print(f"Command failed: {' '.join(cmd)}")
         if r.stderr:
             print(r.stderr)
-        sys.exit(1)
+        #sys.exit(1)
+        return r
     return r
 
 def session_exists(name: str) -> bool:
     r = subprocess.run(["screen", "-list"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return f".{name}" in r.stdout
 
-def stuff(ss_name: str, window_index: int, text: str):
-    run(["screen", "-S", ss_name, "-p", str(window_index), "-X", "stuff", text])
+def stuff(ss_name: str, win_idx, text: str, max_retry: int = 20) -> bool:
+    if not text.endswith("\n"):
+        text = text + "\n"
 
-def send_cmd(ss_name: str, win_name: str, cmd: str, delay: float = 0.01):
-    stuff(ss_name, win_name, cmd + "\n")
-    time.sleep(delay)
+    for attempt in range(1, max_retry + 1):
+        r = subprocess.run(
+            ["screen", "-S", ss_name, "-p", str(win_idx), "-X", "stuff", text],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        if r.returncode == 0:
+            return True
+
+        time.sleep(0.05)
+
+    return False
+    
+def send_cmd(ss_name: str, win_name: str, cmd: str):
+    stuff(ss_name, win_name, cmd)
 
 def create_window(ss_name: str, win_name: str, win_obj):
     if session_exists(ss_name):
-        run(["screen", "-S", ss_name, "-X", "screen", "-t", ""])
+        print(f" new win {win_name}")
+        run(["screen", "-S", ss_name, "-X", "screen", "-t", win_name])
     else:
-        run(["screen", "-dmS", ss_name, "-t", ""])
+        print(f" new sess:{ss_name} win:{win_name}")
+        run(["screen", "-dmS", ss_name, "-t", win_name])
 
 def create_session(ss_name: str, ss_obj):
     print(f"++ {ss_name}")
@@ -48,26 +73,44 @@ def create_session(ss_name: str, ss_obj):
     last = ss_obj.get("last_win", "")
     curr = ss_obj.get("curr_win", "")
     wins = ss_obj.get("wins", {}) or {}
+
+    win_nums = sorted((int(k) for k in wins.keys()))
+    max_num = win_nums[-1]
+
+    run(["screen", "-dmS", ss_name]) # create session
+
+    for _ in range(max_num):
+        run(["screen", "-S", ss_name, "-X", "screen"]) # add max_num wins
+
+    want = set(win_nums)
+    for i in range(max_num, -1, -1):
+        if i not in want:
+            run(["screen", "-S", ss_name, "-p", str(i), "-X", "kill"]) # remove win if not existed
+
+    # fill win data
     for win_name, win_obj in wins.items():
         print(f" +   {win_name}")
-        create_window(ss_name, win_name, win_obj)
+        #create_window(ss_name, win_name, win_obj)
 
         pwd = win_obj.get("pwd", "")
         env = win_obj.get("env", "")
         vi = win_obj.get("vi", "")
 
         if env:
-            send_cmd(ss_name, win_name, env)
+            send_cmd(ss_name, win_name, " " + env)
             print(f"       env:{env}")
         if pwd:
-            send_cmd(ss_name, win_name, "cd " + pwd)
+            send_cmd(ss_name, win_name, " cd " + pwd)
             print(f"       pwd:{pwd}")
+
+        send_cmd(ss_name, win_name, " history -c;history -r")
+
         if vi:
-            send_cmd(ss_name, win_name, vi)
+            send_cmd(ss_name, win_name, " " + vi)
             print(f"       vi:{vi}")
 
-    run(["screen", "-S", ss_name, "-X", "select", last])
-    run(["screen", "-S", ss_name, "-X", "select", curr])
+    #run(["screen", "-S", ss_name, "-X", "select", last])
+    #run(["screen", "-S", ss_name, "-X", "select", curr])
 
 
 
@@ -156,7 +199,7 @@ def main():
         return
 
     ssh_parts = os.environ.get('SSH_CONNECTION').split()
-    conf_name = CONF_PATH + f"conf_{ssh_parts[2]}-{ssh_parts[3]}.json"
+    conf_name = CONF_PATH + f"{ssh_parts[2]}-{ssh_parts[3]}/conf.json"
     conf_path = Path(conf_name).expanduser()
 
     win_name = os.environ.get('WINDOW')
@@ -203,9 +246,20 @@ def main():
         return
 
     if cmd == "load":
+        with open(lock_path, "w") as f:
+            f.write(str(os.getpid()))
+
         print(f"conf_path:[{conf_path}]")
         screen_conf = load_conf(conf_path)
+        screen_conf_ori = copy.deepcopy(screen_conf)
+
         reset_screen(screen_conf)
+
+        time.sleep(2.5)
+
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
+
         return
 
     if cmd == "get":
@@ -277,6 +331,8 @@ def main():
         screen_conf = dict(sorted(screen_conf.items(), key=lambda x: x[0]))
 
         atomic_write_json(conf_path, screen_conf)
+
+
         return
 
     if cmd == "del":
@@ -307,6 +363,11 @@ def main():
 
     print(f"Unknown cmd: {cmd}\nAllowed: load | set | del", file=sys.stderr)
 
-if __name__ == "__main__":
-    main()
 
+if __name__ == "__main__":
+
+    if os.path.exists(lock_path):
+        print("Lock file exists, another instance may be running. Exit.")
+        exit(0) 
+
+    main()

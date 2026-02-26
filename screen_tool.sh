@@ -23,6 +23,8 @@ __log_screen_path() {
     #printf "%-16s %-6s %s\n" "$ss_name" "$win_id" "$PWD"
     #python3 $tool_path/screen_tool.py "set" "$ss_name" "$win_id" "$PWD" "$BASH_COMMAND"
     python3 $tool_path/screen_tool.py "set" "$BASH_COMMAND"
+
+    history -a
 }
 
 if [[ -z "$PROMPT_COMMAND" ]]; then
@@ -46,6 +48,34 @@ __on_bash_exit() {
     python3 $tool_path/screen_tool.py "del"
 }
 trap __on_bash_exit EXIT
+
+__set_history_param() {
+    if [ -z "$STY" ]; then
+        return
+    fi
+
+    local_name=$(echo $SSH_CONNECTION | awk '{ print($3"-"$4) }')
+    win_id=$WINDOW
+    ss_name=${STY#*.}
+
+    if [ -n "$ss_name" ] && [ -n "$win_id" ]; then
+        export HISTFILE="$tool_path/$local_name/historys/$ss_name/${win_id}.history"
+
+        mkdir -p "$(dirname "$HISTFILE")"
+
+        export HISTSIZE=500
+        export HISTFILESIZE=1000
+
+        #shopt -s histappend
+
+        #history -c
+        #history -r
+
+        echo "HISTFILE=$HISTFILE"
+        echo "HISTSIZE=$HISTSIZE"
+        echo "history set complet!"
+    fi
+}
 
 
 screen_tool() {
@@ -88,11 +118,13 @@ elif [ x"$1" = x"uninstall" ];then
         alias st='st'
     fi
 
-elif [ x"$1" = x"" ]; then
+elif [ x"$1" = x"" ]; then #normal exec
     alias st='screen_tool'
 
     last=$(screen_tool -last)
     cd "$last"
+
+    __set_history_param
 
     echo "$script_name load completed!"
 
