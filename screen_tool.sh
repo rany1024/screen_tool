@@ -121,8 +121,13 @@ elif [ x"$1" = x"uninstall" ];then
 elif [ x"$1" = x"" ]; then #normal exec
     alias st='screen_tool'
 
-    last=$(screen_tool -last)
-    cd "$last"
+    if [ -z $SGARCH ]; then
+        last=$(screen_tool -last)
+        if [ -n $last]; then
+            echo "cd to last $last"
+            cd "$last"
+        fi
+    fi
 
     __set_history_param
 
