@@ -5,7 +5,7 @@ tool_path="`cd $(dirname $BASH_SOURCE);pwd;cd - > /dev/null`"
 
 # Regist __log_screen_path
 __log_screen_path() {
-    if [ -z "$STY" ]; then
+    if [ -z "$STY" ] || [ -n "$__st_killed_by_signal" ]; then
         return
     fi
 
@@ -37,8 +37,22 @@ trap __log_screen_path DEBUG
 
 
 # Regist __on_bash_exit
+#
+# 只有用户主动 exit 才把窗口从 conf.json 里摘掉。被 SIGHUP/SIGTERM 干掉时
+# (关机、screen -X quit、ssh 断链) 保留记录, 否则一次关机就会让所有窗口
+# 同时自删, 把整个 conf.json 清空。
+__st_killed_by_signal=""
+__st_on_signal() {
+    __st_killed_by_signal=$1
+    trap - DEBUG
+    PROMPT_COMMAND=
+    exit $2
+}
+trap '__st_on_signal HUP 129' HUP
+trap '__st_on_signal TERM 143' TERM
+
 __on_bash_exit() {
-    if [ -z "$STY" ]; then
+    if [ -z "$STY" ] || [ -n "$__st_killed_by_signal" ]; then
         return
     fi
 

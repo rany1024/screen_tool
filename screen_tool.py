@@ -5,7 +5,11 @@ import sys
 
 from pathlib import Path
 import os
+import shutil
 import tempfile
+import fcntl
+import errno
+from contextlib import contextmanager
 from datetime import datetime
 import time
 import copy
@@ -15,9 +19,24 @@ import getpass
 username = getpass.getuser()
 lock_path = f"/tmp/{username}_lock"
 
+# 单个 reload 最长允许持有的时间, 超过则认为是崩溃遗留的死锁
+LOAD_LOCK_TTL = 120
 
+# conf.json 读-改-写 互斥锁最长等待时间, 等不到就放弃本次写入而不是卡住提示符
+CONF_LOCK_TIMEOUT = 5.0
+
+# 滚动备份: 最多保留份数, 以及两次常规备份之间的最小间隔(秒)
+BACKUP_KEEP = 20
+BACKUP_MIN_INTERVAL = 300
+
+BOLD = "\033[1;48;5;97m"
+RESET = "\033[0m"
 
 CONF_PATH = "~/screen_tool/"
+
+
+class ConfCorrupt(Exception):
+    pass
 
 def run(cmd):
     print(f"run: {' '.join(cmd)}")
@@ -115,20 +134,88 @@ def create_session(ss_name: str, ss_obj):
 
 
 def load_conf(path: Path) -> dict:
-    if path.exists():
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    if not path.exists():
+        return {}
+
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        raise ConfCorrupt(f"{path} is empty")
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ConfCorrupt(f"{path}: {e}") from None
+
+@contextmanager
+def conf_lock(path: Path):
+    """把 conf.json 的读-改-写整段串行化, 避免并发进程互相覆盖。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path.parent / (path.name + ".lock")), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + CONF_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as e:
+                if e.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"conf lock busy: {path}")
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+def backup_conf(path: Path, force: bool = False):
+    if not path.exists():
+        return
+
+    bdir = path.parent / "backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+
+    snaps = sorted(bdir.glob("conf-*.json"))
+    if not force and snaps:
+        if time.time() - snaps[-1].stat().st_mtime < BACKUP_MIN_INTERVAL:
+            return
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    shutil.copy2(str(path), str(bdir / f"conf-{stamp}.json"))
+
+    for old in sorted(bdir.glob("conf-*.json"))[:-BACKUP_KEEP]:
+        old.unlink()
+
+def count_wins(conf: dict) -> int:
+    return sum(len(ss.get("wins", {}) or {}) for ss in conf.values())
 
 def atomic_write_json(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", delete=False, encoding="utf-8",
-        dir=str(path.parent), prefix=path.name + ".tmp."
-    ) as tf:
-        json.dump(data, tf, ensure_ascii=False, indent=2)
-        tmp = tf.name
-    os.replace(tmp, str(path))
+
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tf:
+            json.dump(data, tf, ensure_ascii=False, indent=2)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp, str(path))
+        tmp = None
+    finally:
+        if tmp is not None and os.path.exists(tmp):
+            os.unlink(tmp)
+
+    dfd = os.open(str(path.parent), os.O_DIRECTORY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+def save_conf(path: Path, data: dict, before: dict):
+    """写回前先滚动备份, 条目变少时强制留一份快照。"""
+    backup_conf(path, force=count_wins(data) < count_wins(before))
+    atomic_write_json(path, data)
 
 
 def get_wins_len_dict(wins):
@@ -198,7 +285,12 @@ def main():
         print(f"Usage: {sys.argv[0]} <show | show_all | load | get | set | del>")
         return
 
-    ssh_parts = os.environ.get('SSH_CONNECTION').split()
+    ssh_conn = os.environ.get('SSH_CONNECTION')
+    if not ssh_conn:
+        print("SSH_CONNECTION not set", file=sys.stderr)
+        return
+
+    ssh_parts = ssh_conn.split()
     conf_name = CONF_PATH + f"{ssh_parts[2]}-{ssh_parts[3]}/conf.json"
     conf_path = Path(conf_name).expanduser()
 
@@ -246,19 +338,19 @@ def main():
         return
 
     if cmd == "load":
+        print(f"conf_path:[{conf_path}]")
+        screen_conf = load_conf(conf_path)
+        backup_conf(conf_path, force=True)
+
         with open(lock_path, "w") as f:
             f.write(str(os.getpid()))
 
-        print(f"conf_path:[{conf_path}]")
-        screen_conf = load_conf(conf_path)
-        screen_conf_ori = copy.deepcopy(screen_conf)
-
-        reset_screen(screen_conf)
-
-        time.sleep(2.5)
-
-        if os.path.exists(lock_path):
-            os.remove(lock_path)
+        try:
+            reset_screen(screen_conf)
+            time.sleep(2.5)
+        finally:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
 
         return
 
@@ -283,55 +375,8 @@ def main():
 
         bash_cmd = sys.argv[2]
 
-        screen_conf = load_conf(conf_path)
-        screen_conf_ori = copy.deepcopy(screen_conf)
-
-        ss_obj = screen_conf.setdefault(ss_name, {})
-        wins = ss_obj.setdefault("wins", {})
-        last_win_name = ss_obj.get("curr_win", "")
-        if last_win_name != win_name :
-            ss_obj["last_win"] = last_win_name
-
-        if not last_win_name in wins:
-            ss_obj["last_win"] = ""
-
-        ss_obj["curr_win"] = win_name
-        curr_win = wins.setdefault(win_name, {})
-#        if not isinstance(curr_win, dict):
-#            __type = type(curr_win)
-#            print(f"curr_win({__type}) not dict!, reset it!")
-#            curr_win = wins[win_name] = {}
-        
-        curr_win["pwd"] = pwd
-
-        if not bash_cmd.startswith('python3 $tool_path/screen_tool.py'):
-            BOLD  = "\033[1;48;5;97m"
-            RESET = "\033[0m"
-            print(f"._EXEC_: {BOLD}{bash_cmd}{RESET}")
-
-        if bash_cmd[:2] == "vi" :
-            print(f"Enter vi: [{BOLD}{bash_cmd}{RESET}]")
-            curr_win["vi"] = bash_cmd
-        elif "vi" in curr_win :
-            del curr_win["vi"]
-
-        if bash_cmd[:4] == "env.":
-            print(f"Enter env: [{BOLD}{bash_cmd}{RESET}]")
-            curr_win["env"] = bash_cmd
-
-        #wins[str(win_name)] = pwd
-
-        if (screen_conf == screen_conf_ori):
-            return
-
-        ss_obj["last_ts"] = datetime.now().strftime("%Y%m%d-%H:%M:%S")
-
-        ss_obj["wins"] = dict(sorted(wins.items(), key=lambda x: int(x[0])))
-
-        screen_conf = dict(sorted(screen_conf.items(), key=lambda x: x[0]))
-
-        atomic_write_json(conf_path, screen_conf)
-
+        with conf_lock(conf_path):
+            set_win(conf_path, ss_name, win_name, pwd, bash_cmd)
 
         return
 
@@ -340,34 +385,116 @@ def main():
             print(f"Usage: {sys.argv[0]} {cmd} ", file=sys.stderr)
             return
 
-        screen_conf = load_conf(conf_path)
-        if not ss_name in screen_conf:
-            print(f"session {ss_name} 2.not find!")
-            return
-
-        if not win_name in screen_conf[ss_name]["wins"]:
-            print(f"in{ss_name}, win {win_name} 3.not find!")
-            return
-
-        del screen_conf[ss_name]["wins"][win_name]
-
-        if screen_conf[ss_name]["last_win"] == win_name:
-            screen_conf[ss_name]["last_win"] = ""
-
-        if not screen_conf[ss_name]["wins"] :
-            del screen_conf[ss_name]
-
-        atomic_write_json(conf_path, screen_conf)
+        with conf_lock(conf_path):
+            del_win(conf_path, ss_name, win_name)
 
         return
 
     print(f"Unknown cmd: {cmd}\nAllowed: load | set | del", file=sys.stderr)
 
 
+def set_win(conf_path: Path, ss_name, win_name, pwd, bash_cmd):
+    screen_conf = load_conf(conf_path)
+    screen_conf_ori = copy.deepcopy(screen_conf)
+
+    ss_obj = screen_conf.setdefault(ss_name, {})
+    wins = ss_obj.setdefault("wins", {})
+    last_win_name = ss_obj.get("curr_win", "")
+    if last_win_name != win_name :
+        ss_obj["last_win"] = last_win_name
+
+    if not last_win_name in wins:
+        ss_obj["last_win"] = ""
+
+    ss_obj["curr_win"] = win_name
+    curr_win = wins.setdefault(win_name, {})
+
+    curr_win["pwd"] = pwd
+
+    if not bash_cmd.startswith('python3 $tool_path/screen_tool.py'):
+        print(f"._EXEC_: {BOLD}{bash_cmd}{RESET}")
+
+    if bash_cmd[:2] == "vi" :
+        print(f"Enter vi: [{BOLD}{bash_cmd}{RESET}]")
+        curr_win["vi"] = bash_cmd
+    elif "vi" in curr_win :
+        del curr_win["vi"]
+
+    if bash_cmd[:4] == "env.":
+        print(f"Enter env: [{BOLD}{bash_cmd}{RESET}]")
+        curr_win["env"] = bash_cmd
+
+    if (screen_conf == screen_conf_ori):
+        return
+
+    ss_obj["last_ts"] = datetime.now().strftime("%Y%m%d-%H:%M:%S")
+
+    ss_obj["wins"] = dict(sorted(wins.items(), key=lambda x: int(x[0])))
+
+    screen_conf = dict(sorted(screen_conf.items(), key=lambda x: x[0]))
+
+    save_conf(conf_path, screen_conf, screen_conf_ori)
+
+
+def del_win(conf_path: Path, ss_name, win_name):
+    screen_conf = load_conf(conf_path)
+    screen_conf_ori = copy.deepcopy(screen_conf)
+
+    if not ss_name in screen_conf:
+        print(f"session {ss_name} 2.not find!")
+        return
+
+    if not win_name in screen_conf[ss_name]["wins"]:
+        print(f"in{ss_name}, win {win_name} 3.not find!")
+        return
+
+    del screen_conf[ss_name]["wins"][win_name]
+
+    if screen_conf[ss_name]["last_win"] == win_name:
+        screen_conf[ss_name]["last_win"] = ""
+
+    if not screen_conf[ss_name]["wins"] :
+        del screen_conf[ss_name]
+
+    save_conf(conf_path, screen_conf, screen_conf_ori)
+
+
+def load_lock_active() -> bool:
+    """判断 reload 锁是否有效, 顺手清掉崩溃遗留的死锁。"""
+    try:
+        st = os.stat(lock_path)
+    except FileNotFoundError:
+        return False
+
+    stale = time.time() - st.st_mtime > LOAD_LOCK_TTL
+    if not stale:
+        try:
+            os.kill(int(Path(lock_path).read_text().strip()), 0)
+        except (ValueError, ProcessLookupError):
+            stale = True
+        except PermissionError:
+            pass
+
+    if stale:
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
+        return False
+
+    return True
+
+
 if __name__ == "__main__":
 
-    if os.path.exists(lock_path):
-        print("Lock file exists, another instance may be running. Exit.")
-        exit(0) 
+    if load_lock_active():
+        exit(0)
 
-    main()
+    try:
+        main()
+    except ConfCorrupt as e:
+        print(f"conf.json unreadable, refusing to write: {e}", file=sys.stderr)
+        exit(1)
+    except TimeoutError as e:
+        print(f"skip write: {e}", file=sys.stderr)
+        exit(1)
