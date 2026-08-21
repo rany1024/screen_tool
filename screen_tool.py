@@ -328,13 +328,12 @@ def main():
 
         screen_conf = load_conf(conf_path)
 
-        for __ss_name, ss_obj in screen_conf.items():
-            if __ss_name == ss_name :
-                last_win_name = ss_obj.get("last_win")
-                pwd = ss_obj["wins"][last_win_name]["pwd"]
-                print(f"{pwd}")
-                return
-                
+        ss_obj = screen_conf.get(ss_name) or {}
+        last_win_name = ss_obj.get("last_win") or ""
+        win_obj = (ss_obj.get("wins") or {}).get(last_win_name) or {}
+        last_pwd = win_obj.get("pwd") or ""
+        if last_pwd:
+            print(last_pwd)
         return
 
     if cmd == "load":
@@ -411,8 +410,8 @@ def set_win(conf_path: Path, ss_name, win_name, pwd, bash_cmd):
 
     curr_win["pwd"] = pwd
 
-    if not bash_cmd.startswith('python3 $tool_path/screen_tool.py'):
-        print(f"._EXEC_: {BOLD}{bash_cmd}{RESET}")
+    if bash_cmd.startswith("python") and "screen_tool.py" in bash_cmd:
+        bash_cmd = ""
 
     if bash_cmd[:2] == "vi" :
         print(f"Enter vi: [{BOLD}{bash_cmd}{RESET}]")

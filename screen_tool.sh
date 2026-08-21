@@ -3,28 +3,37 @@
 tool_path="`cd $(dirname $BASH_SOURCE);pwd;cd - > /dev/null`"
 
 
-# Regist __log_screen_path
-__log_screen_path() {
-    if [ -z "$STY" ] || [ -n "$__st_killed_by_signal" ]; then
+# DEBUG 只记下即将执行的命令; 真正写 conf 放到 PROMPT_COMMAND,
+# 这时 cd 已经完成, PWD 才是对的。source 本脚本期间 __st_ready 为空, 不会入账。
+__st_ready=""
+__st_pending_cmd=""
+
+__st_on_debug() {
+    if [ -z "$__st_ready" ] || [ -z "$STY" ] || [ -n "$__st_killed_by_signal" ]; then
         return
     fi
-
-    win_id=$WINDOW
-    ss_name=${STY#*.}
-
     if [[ "$PROMPT_COMMAND;" == *"$BASH_COMMAND;"* ]]; then
-        return 
+        return
     fi
+    case "$BASH_COMMAND" in
+        python*|__st_*|__log_screen_path*|__set_history_param*|__on_bash_exit*)
+            return
+            ;;
+    esac
+    __st_pending_cmd="$BASH_COMMAND"
+    printf '._EXEC_: \033[1;48;5;97m%s\033[0m\n' "$BASH_COMMAND"
+}
 
-    if [[ "${BASH_COMMAND:0:6}" == "python" ]]; then
+__log_screen_path() {
+    if [ -z "$__st_ready" ] || [ -z "$STY" ] || [ -n "$__st_killed_by_signal" ]; then
         return
     fi
 
-    #printf "%-16s %-6s %s\n" "$ss_name" "$win_id" "$PWD"
-    #python3.8 $tool_path/screen_tool.py "set" "$ss_name" "$win_id" "$PWD" "$BASH_COMMAND"
-    python3.8 $tool_path/screen_tool.py "set" "$BASH_COMMAND"
-
+    trap - DEBUG
+    python3.8 $tool_path/screen_tool.py "set" "$__st_pending_cmd"
+    __st_pending_cmd=""
     history -a
+    trap __st_on_debug DEBUG
 }
 
 if [[ -z "$PROMPT_COMMAND" ]]; then
@@ -33,7 +42,6 @@ else
     PROMPT_COMMAND="$(echo $PROMPT_COMMAND | sed 's/;__log_screen_path//g' )"
     PROMPT_COMMAND="${PROMPT_COMMAND%%+([[:space:];])};__log_screen_path"
 fi
-trap __log_screen_path DEBUG
 
 
 # Regist __on_bash_exit
@@ -135,9 +143,9 @@ elif [ x"$1" = x"uninstall" ];then
 elif [ x"$1" = x"" ]; then #normal exec
     alias st='screen_tool'
 
-    if [ -z $SGARCH ]; then
+    if [ -z "$SGARCH" ]; then
         last=$(screen_tool -last)
-        if [ -n $last]; then
+        if [ -n "$last" ]; then
             echo "cd to last $last"
             cd "$last"
         fi
@@ -146,6 +154,7 @@ elif [ x"$1" = x"" ]; then #normal exec
     __set_history_param
 
     echo "$script_name load completed!"
+    __st_ready=1
 
 else
     echo "$script_name [install | uninstall]"
