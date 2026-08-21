@@ -21,8 +21,8 @@ __log_screen_path() {
     fi
 
     #printf "%-16s %-6s %s\n" "$ss_name" "$win_id" "$PWD"
-    #python3 $tool_path/screen_tool.py "set" "$ss_name" "$win_id" "$PWD" "$BASH_COMMAND"
-    python3 $tool_path/screen_tool.py "set" "$BASH_COMMAND"
+    #python3.8 $tool_path/screen_tool.py "set" "$ss_name" "$win_id" "$PWD" "$BASH_COMMAND"
+    python3.8 $tool_path/screen_tool.py "set" "$BASH_COMMAND"
 
     history -a
 }
@@ -59,7 +59,7 @@ __on_bash_exit() {
     win_id=$WINDOW
     ss_name=${STY#*.}
 
-    python3 $tool_path/screen_tool.py "del"
+    python3.8 $tool_path/screen_tool.py "del"
 }
 trap __on_bash_exit EXIT
 
@@ -96,15 +96,15 @@ screen_tool() {
     ss_name=${STY#*.}
     switch_id=$1
     if [ -z "$switch_id" ]; then
-        python3 $tool_path/screen_tool.py "show"
+        python3.8 $tool_path/screen_tool.py "show"
     elif [ x"$switch_id" == x"-a" ]; then
-        python3 $tool_path/screen_tool.py "show_all"
+        python3.8 $tool_path/screen_tool.py "show_all"
     elif [ x"$switch_id" == x"-last" ]; then
-        python3 $tool_path/screen_tool.py "get_last_pwd"
+        python3.8 $tool_path/screen_tool.py "get_last_pwd"
     elif [ x"$switch_id" == x"-load" ]; then
-        python3 $tool_path/screen_tool.py "load" $2
+        python3.8 $tool_path/screen_tool.py "load" $2
     else
-        path=$(python3 $tool_path/screen_tool.py "get" $switch_id)
+        path=$(python3.8 $tool_path/screen_tool.py "get" $switch_id)
         cd "$path"
     fi
 }
