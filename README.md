@@ -8,12 +8,13 @@ source screen_tool.sh uninstall
 
 # 2. 基础命令
 ```
-st : 相当于screen_tool show
-st -a : 相当于 screen_tool show_all
-st <id> : cd 到指定id的路径去
+st : 列出当前会话的窗口
+st -a : 列出全部会话
+st <id> : cd 到指定窗口的路径
+st -load : 按 conf 恢复会话, 并 screen -rd 进最近一次工作的会话
 ```
 
 # 3. 基本功能
-    3.1 记录screen各会话,窗口信息, 保存到[conf_服务地址-端口号.json]中
-    3.2 会根窗口的增/删, 切换路径而更新conf...json的内容
-    3.3 断电后调用screen_tool load 恢复会话 (暂未实现)
+    3.1 记录各会话/窗口, 保存到 `[<SSH目标IP>-<端口>/conf.json]`
+    3.2 跟着窗口增删、切路径、`env.` / `vi` 更新 conf
+    3.3 断电后 `st -load` 恢复会话, 并进入最近一次工作的会话
