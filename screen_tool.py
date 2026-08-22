@@ -128,8 +128,10 @@ def create_session(ss_name: str, ss_obj):
             send_cmd(ss_name, win_name, " " + vi)
             print(f"       vi:{vi}")
 
-    #run(["screen", "-S", ss_name, "-X", "select", last])
-    #run(["screen", "-S", ss_name, "-X", "select", curr])
+    if last:
+        run(["screen", "-S", ss_name, "-X", "select", str(last)])
+    if curr:
+        run(["screen", "-S", ss_name, "-X", "select", str(curr)])
 
 
 
@@ -187,6 +189,26 @@ def backup_conf(path: Path, force: bool = False):
 
     for old in sorted(bdir.glob("conf-*.json"))[:-BACKUP_KEEP]:
         old.unlink()
+
+def last_session_name(conf: dict) -> str:
+    """按 last_ts 选出最近工作过的会话; 时间相同则取名字较小的。"""
+    best = ""
+    best_ts = None
+    for name, obj in (conf or {}).items():
+        ts = (obj or {}).get("last_ts") or ""
+        if best_ts is None or ts > best_ts or (ts == best_ts and name < best):
+            best = name
+            best_ts = ts
+    return best
+
+
+def last_session_target(conf: dict):
+    name = last_session_name(conf)
+    if not name:
+        return "", ""
+    curr = str((conf.get(name) or {}).get("curr_win") or "")
+    return name, curr
+
 
 def count_wins(conf: dict) -> int:
     return sum(len(ss.get("wins", {}) or {}) for ss in conf.values())
@@ -282,7 +304,7 @@ def reset_screen(screen_conf):
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <show | show_all | load | get | set | del>")
+        print(f"Usage: {sys.argv[0]} <show | show_all | load | get_last_session | get_last_target | get | set | del>")
         return
 
     ssh_conn = os.environ.get('SSH_CONNECTION')
@@ -334,6 +356,29 @@ def main():
         last_pwd = win_obj.get("pwd") or ""
         if last_pwd:
             print(last_pwd)
+        return
+
+    if cmd == "get_last_session":
+        if len(sys.argv) != 2:
+            print(f"Usage: {sys.argv[0]} {cmd}", file=sys.stderr)
+            return
+
+        screen_conf = load_conf(conf_path)
+        name = last_session_name(screen_conf)
+        if name:
+            print(name)
+        return
+
+    if cmd == "get_last_target":
+        if len(sys.argv) != 2:
+            print(f"Usage: {sys.argv[0]} {cmd}", file=sys.stderr)
+            return
+
+        name, curr = last_session_target(load_conf(conf_path))
+        if name and curr:
+            print(f"{name} {curr}")
+        elif name:
+            print(name)
         return
 
     if cmd == "load":
@@ -389,7 +434,7 @@ def main():
 
         return
 
-    print(f"Unknown cmd: {cmd}\nAllowed: load | set | del", file=sys.stderr)
+    print(f"Unknown cmd: {cmd}\nAllowed: load | get_last_session | get_last_target | set | del", file=sys.stderr)
 
 
 def set_win(conf_path: Path, ss_name, win_name, pwd, bash_cmd):

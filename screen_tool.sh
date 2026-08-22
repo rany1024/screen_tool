@@ -110,7 +110,23 @@ screen_tool() {
     elif [ x"$switch_id" == x"-last" ]; then
         python3.8 $tool_path/screen_tool.py "get_last_pwd"
     elif [ x"$switch_id" == x"-load" ]; then
-        python3.8 $tool_path/screen_tool.py "load" $2
+        python3.8 $tool_path/screen_tool.py "load" $2 || return
+        if [ -n "$STY" ]; then
+            return
+        fi
+        target=$(python3.8 $tool_path/screen_tool.py "get_last_target")
+        last=${target%% *}
+        win=${target#* }
+        if [ -z "$last" ]; then
+            return
+        fi
+        if [ -n "$win" ] && [ "$win" != "$last" ]; then
+            echo "screen -rd $last -p $win"
+            screen -rd "$last" -p "$win"
+        else
+            echo "screen -rd $last"
+            screen -rd "$last"
+        fi
     else
         path=$(python3.8 $tool_path/screen_tool.py "get" $switch_id)
         cd "$path"
